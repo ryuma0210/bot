@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LOMAカレンタカー 自動応答チャット</title>
+<style>
+  :root {
+    --bg: #f4f6f8;
+    --card: #ffffff;
+    --bot: #ffffff;
+    --user: #2f7de1;
+    --text: #1f2933;
+    --sub: #6b7785;
+    --line: #dde3ea;
+    --accent: #2f7de1;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    background: var(--accent);
+    color: #fff;
+    padding: 14px 16px;
+    font-size: 17px;
+    font-weight: 600;
+  }
+  #log {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 12px;
+  }
+  .msg {
+    max-width: 85%;
+    padding: 10px 14px;
+    margin: 8px 0;
+    border-radius: 16px;
+    line-height: 1.6;
+    font-size: 16px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .bot {
+    background: var(--bot);
+    border: 1px solid var(--line);
+    border-top-left-radius: 4px;
+    margin-right: auto;
+  }
+  .user {
+    background: var(--user);
+    color: #fff;
+    border-top-right-radius: 4px;
+    margin-left: auto;
+  }
+  #choices {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 4px 12px 10px;
+  }
+  #choices button {
+    background: var(--card);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    border-radius: 20px;
+    padding: 10px 16px;
+    font-size: 15px;
+    cursor: pointer;
+  }
+  #choices button:active { background: #e8f1fd; }
+  form {
+    display: flex;
+    gap: 8px;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    background: var(--card);
+    border-top: 1px solid var(--line);
+  }
+  input[type="text"] {
+    flex: 1;
+    font-size: 16px; /* 16px未満だとスマホで拡大される */
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: 22px;
+    outline: none;
+  }
+  input[type="text"]:focus { border-color: var(--accent); }
+  form button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 22px;
+    padding: 0 20px;
+    font-size: 16px;
+    cursor: pointer;
+  }
+  .note {
+    text-align: center;
+    color: var(--sub);
+    font-size: 12px;
+    padding: 4px 0;
+  }
+</style>
+</head>
+<body>
+
+<header>LOMAカレンタカー 自動応答チャット</header>
+<div id="log" aria-live="polite"></div>
+<div id="choices"></div>
+<form id="form" autocomplete="off">
+  <input type="text" id="input" placeholder="メッセージを入力" aria-label="メッセージ">
+  <button type="submit">送信</button>
+</form>
+
+<script>
+/* ============================================================
+   設定ここから（中身はあとで書き換えてください）
+   ============================================================ */
+const CONFIG = {
+  // 後でGASのWebアプリのURLを入れる。空のあいだはダミー応答で動く
+  GAS_URL: "",
+
+  greeting: "こんにちは。LOMAカレンタカーの自動応答です。ご用件を選ぶか、メッセージを入力してください。",
+
+  // 定型の案内。keywordsに入力文のキーワードを入れると自動でその回答を返す
+  topics: [
+    {
+      label: "営業時間",
+      keywords: ["営業時間", "何時", "定休日", "休み"],
+      answer: "【ダミー】営業時間は、ここに入力してください。"
+    },
+    {
+      label: "料金",
+      keywords: ["料金", "値段", "いくら", "価格", "プラン"],
+      answer: "【ダミー】料金の案内は、ここに入力してください。"
+    },
+    {
+      label: "場所・アクセス",
+      keywords: ["場所", "住所", "アクセス", "行き方", "どこ"],
+      answer: "【ダミー】場所の案内は、ここに入力してください。"
+    },
+    {
+      label: "予約方法",
+      keywords: ["予約方法", "予約したい", "申し込み", "借りたい"],
+      answer: "【ダミー】予約方法の案内は、ここに入力してください。"
+    }
+  ],
+
+  // 予約状況の確認（今はダミー。あとでGASにつなぐ）
+  reservationLabel: "予約状況の確認",
+  reservationKeywords: ["予約状況", "予約確認", "予約番号", "確認したい"],
+
+  fallback: "うまく読み取れませんでした。下のボタンから選ぶか、別の言い方でお試しください。",
+  handoff: "お急ぎの場合や、自動応答で解決しない場合は、お電話でお問い合わせください。"
+};
+/* ============================================================
+   設定ここまで
+   ============================================================ */
+
+const log = document.getElementById("log");
+const choices = document.getElementById("choices");
+const form = document.getElementById("form");
+const input = document.getElementById("input");
+
+// 予約状況確認の会話状態: null か "waitingNumber"
+let state = null;
+
+function addMessage(text, who) {
+  const div = document.createElement("div");
+  div.className = "msg " + who;
+  div.textContent = text;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+function botSay(text) { addMessage(text, "bot"); }
+function userSay(text) { addMessage(text, "user"); }
+
+function showChoices() {
+  choices.innerHTML = "";
+  const labels = CONFIG.topics.map(t => t.label).concat([CONFIG.reservationLabel]);
+  labels.forEach(label => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.addEventListener("click", () => handleInput(label));
+    choices.appendChild(b);
+  });
+}
+
+// 後でGASにつなぐ場所。今はダミーの返事を返す
+async function lookupReservation(number) {
+  if (!CONFIG.GAS_URL) {
+    return "【ダミー】予約番号「" + number + "」の確認機能は、準備中です。";
+  }
+  try {
+    const url = CONFIG.GAS_URL + "?action=lookup&number=" + encodeURIComponent(number);
+    const res = await fetch(url);
+    const data = await res.json();
+    return data.message || "該当する予約が見つかりませんでした。";
+  } catch (e) {
+    return "ただいま確認できません。時間をおいてお試しください。";
+  }
+}
+
+function findTopic(text) {
+  return CONFIG.topics.find(t =>
+    text === t.label || t.keywords.some(k => text.includes(k))
+  );
+}
+
+function isReservationCheck(text) {
+  return text === CONFIG.reservationLabel ||
+         CONFIG.reservationKeywords.some(k => text.includes(k));
+}
+
+async function handleInput(raw) {
+  const text = raw.trim();
+  if (!text) return;
+  userSay(text);
+
+  // 予約番号の入力待ち
+  if (state === "waitingNumber") {
+    state = null;
+    const reply = await lookupReservation(text);
+    botSay(reply);
+    return;
+  }
+
+  if (isReservationCheck(text)) {
+    state = "waitingNumber";
+    botSay("予約番号を入力してください。");
+    return;
+  }
+
+  const topic = findTopic(text);
+  if (topic) {
+    botSay(topic.answer);
+    return;
+  }
+
+  botSay(CONFIG.fallback + "\n\n" + CONFIG.handoff);
+}
+
+form.addEventListener("submit", e => {
+  e.preventDefault();
+  const v = input.value;
+  input.value = "";
+  handleInput(v);
+});
+
+// 起動
+botSay(CONFIG.greeting);
+showChoices();
+</script>
+</body>
+</html>
